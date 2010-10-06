@@ -38,9 +38,10 @@ class PuSHSubscriber {
    */
   public static function instance($domain, $subscriber_id, $subscription_class, PuSHSubscriberEnvironmentInterface $env) {
     static $subscribers;
-    if (!isset($subscriber[$domain][$subscriber_id])) {
+    if (!isset($subscribers[$domain][$subscriber_id])) {
       $subscriber = new PuSHSubscriber($domain, $subscriber_id, $subscription_class, $env);
-    }
+	  $subscribers[$domain][$subscriber_id] = $subscriber;
+	}
     return $subscriber;
   }
 
