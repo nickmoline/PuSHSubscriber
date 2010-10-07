@@ -19,12 +19,15 @@ class PuSHSubscriber {
   protected $subscriber_id;
   protected $subscription_class;
   protected $env;
+  
+  // subscriber instance cache
+  public static $subscribers;
 
   /**
    * Singleton.
    *
    * PuSHSubscriber identifies a unique subscription by a domain and a numeric
-   * id. The numeric id is assumed to e unique in its domain.
+   * id. The numeric id is assumed to be unique in its domain.
    *
    * @param $domain
    *   A string that identifies the domain in which $subscriber_id is unique.
@@ -37,10 +40,13 @@ class PuSHSubscriber {
    *   Environmental object for messaging and logging.
    */
   public static function instance($domain, $subscriber_id, $subscription_class, PuSHSubscriberEnvironmentInterface $env) {
-    static $subscribers;
-    if (!isset($subscribers[$domain][$subscriber_id])) {
+    
+    if (!isset(self::$subscribers[$domain][$subscriber_id])) {
       $subscriber = new PuSHSubscriber($domain, $subscriber_id, $subscription_class, $env);
-	  $subscribers[$domain][$subscriber_id] = $subscriber;
+	  // cache the instance
+	  self::$subscribers[$domain][$subscriber_id] = $subscriber;
+	} else {
+		$subscriber = self::$subscribers[$domain][$subscriber_id];
 	}
     return $subscriber;
   }
@@ -68,7 +74,7 @@ class PuSHSubscriber {
    *   The URL of a hub. If given overrides the hub URL found in the document
    *   at $url.
    */
-  public function subscribe($url, $callback_url, $hub = '') {
+  public function subscribe($url, $callback_url, $hub = '', $lease_time='') {
     // Fetch document, find rel=hub and rel=self.
     // If present, issue subscription request.
     $request = curl_init($url);
@@ -76,8 +82,10 @@ class PuSHSubscriber {
     curl_setopt($request, CURLOPT_RETURNTRANSFER, TRUE);
     $data = curl_exec($request);
     if (curl_getinfo($request, CURLINFO_HTTP_CODE) == 200) {
+	  libxml_use_internal_errors(true);
+	  // $xml_options = LIBXML_COMPACT | LIBXML_NOERROR | LIBXML_NOWARNING;
       try {
-        $xml = @ new SimpleXMLElement($data);
+        $xml = new SimpleXMLElement($data);
         $xml->registerXPathNamespace('atom', 'http://www.w3.org/2005/Atom');
         if (empty($hub) && $hub = @current($xml->xpath("//atom:link[attribute::rel='hub']"))) {
           $hub = (string) $hub->attributes()->href;
@@ -89,13 +97,16 @@ class PuSHSubscriber {
       catch (Exception $e) {}
     }
     curl_close($request);
+	libxml_clear_errors();
     // Fall back to $url if $self is not given.
     if (!$self) {
       $self = $url;
     }
     if (!empty($hub) && !empty($self)) {
-      $this->request($hub, $self, 'subscribe', $callback_url);
-    }
+      $this->request($hub, $self, 'subscribe', $callback_url, $lease_time);
+    } else {
+		$this->log("Hub discovery failed for $url", 'warning');
+	}
   }
 
   /**
@@ -118,14 +129,14 @@ class PuSHSubscriber {
   /**
    * Request handler for subscription callbacks.
    */
-  public function handleRequest($callback) {
+  public function handleRequest($callback, $raw_xml = false) {
     if (isset($_GET['hub_challenge'])) {
       $this->verifyRequest();
     }
     // No subscription notification has ben sent, we are being notified.
     else {
-      if ($raw = $this->receive()) {
-        $callback($raw, $this->domain, $this->subscriber_id);
+      if ($xml = $this->receive($raw_xml)) {
+        call_user_func_array($callback, array($xml, $this->domain, $this->subscriber_id));
       }
     }
   }
@@ -142,7 +153,7 @@ class PuSHSubscriber {
    *   An XML string that is the payload of the notification if valid, FALSE
    *   otherwise.
    */
-  public function receive($ignore_signature = FALSE) {
+  public function receive($raw_xml = false, $ignore_signature = FALSE) {
     /**
      * Verification steps:
      *
@@ -153,25 +164,34 @@ class PuSHSubscriber {
      */
     if ($_SERVER['REQUEST_METHOD'] == 'POST') {
       $raw = file_get_contents('php://input');
-      if (@simplexml_load_string($raw)) {
-        if ($ignore_signature) {
-          return $raw;
+	  
+	  // suppress libxml errors
+	  libxml_use_internal_errors(true);
+	  
+	  // Tell the hub how many users we represent
+	  //header('X-Hub-On-Behalf-Of: '. self::$subscriber_number);
+      
+	  if (($xml_object = simplexml_load_string($raw)) !== false) {
+	  	if ($ignore_signature) {
+          return $raw_xml ? $raw : $xml_object;
         }
+		
         if (isset($_SERVER['HTTP_X_HUB_SIGNATURE']) && ($sub = $this->subscription())) {
           $result = array();
           parse_str($_SERVER['HTTP_X_HUB_SIGNATURE'], $result);
           if (isset($result['sha1']) && $result['sha1'] == hash_hmac('sha1', $raw, $sub->secret)) {
-            return $raw;
-          }
-          else {
+            return $raw_xml ? $raw : $xml_object;
+          } else {
             $this->log('Could not verify signature.', 'error');
           }
-        }
-        else {
+        } else {
           $this->log('No signature present.', 'error');
         }
-      }
+      } else {
+		$this->log('Received bad XML.', 'error');
+	  }
     }
+	
     return FALSE;
   }
 
@@ -197,7 +217,7 @@ class PuSHSubscriber {
         if ($_GET['hub_verify_token'] == $sub->post_fields['hub.verify_token']) {
           if ($_GET['hub_mode'] == 'subscribe' && $sub->status == 'subscribe') {
             $sub->status = 'subscribed';
-            $sub->post_fields = array();
+            
             $sub->save();
             $this->log('Verified "subscribe" request.');
             $verify = TRUE;
@@ -210,18 +230,18 @@ class PuSHSubscriber {
             $verify = TRUE;
           }
         }
-      }
-      elseif ($_GET['hub_mode'] == 'unsubscribe') {
-        $this->log('Verified "unsubscribe" request.');
+      } elseif ($_GET['hub_mode'] == 'unsubscribe') {
+        $this->log('Verified "unsubscribe" request (sub did not exist).');
         $verify = TRUE;
       }
+	  
       if ($verify) {
-        header('HTTP/1.1 200 "Found"', null, 200);
+        header('HTTP/1.1 200 "Found"', true, 200);
         print $_GET['hub_challenge'];
         exit();
       }
     }
-    header('HTTP/1.1 404 "Not Found"', null, 404);
+    header('HTTP/1.1 404 "Not Found"', true, 404);
     $this->log('Could not verify subscription.', 'error');
     exit();
   }
@@ -242,18 +262,20 @@ class PuSHSubscriber {
    *
    * @todo Make concurrency safe.
    */
-  protected function request($hub, $topic, $mode, $callback_url) {
-    $secret = hash('sha1', uniqid(rand(), true));
+  protected function request($hub, $topic, $mode, $callback_url, $lease_time='') {
+	$entropy = microtime() . mt_rand() . uniqid(mt_rand(),true);
+    $secret = hash('sha1', $entropy, true));
     $post_fields = array(
       'hub.callback' => $callback_url,
       'hub.mode' => $mode,
       'hub.topic' => $topic,
-      'hub.verify' => 'sync',
-      'hub.lease_seconds' => '', // Permanent subscription.
+      'hub.verify' => 'async',
+      'hub.lease_seconds' => $lease_time, // Permanent subscription.
       'hub.secret' => $secret,
-      'hub.verify_token' => md5(session_id() . rand()),
+      'hub.verify_token' => md5(session_id() . mt_rand()),
     );
-    $sub = new $this->subscription_class($this->domain, $this->subscriber_id, $hub, $topic, $secret, $mode, $post_fields);
+	$sub_class = $this->subscription_class;
+    $sub = new $sub_class($this->domain, $this->subscriber_id, $hub, $topic, $secret, $mode, $post_fields);
     $sub->save();
     // Issue subscription request.
     $request = curl_init($hub);
