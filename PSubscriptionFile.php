@@ -7,7 +7,7 @@
  * variables.
  */
 class PSubscriptionFile implements PuSHSubscriptionInterface {
-  public $subscription_dir = './subscriptions';
+  public static $subscription_dir = './subscriptions';
   public static $subscriptions;
 
   /**
@@ -32,14 +32,16 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
    * @param $post_fields
    *   An array of the fields posted to the hub.
    */
-  public function __construct($domain, $subscriber_id, $hub, $topic, $secret, $status = '', $post_fields = '') {
+  public function __construct($domain, $subscriber_id, $hub, $topic, $secret, $status = '', $callback_url, $verify_token, $lease_time) {
     $this->domain = $domain;
 	$this->subscriber_id = $subscriber_id;
 	$this->hub = $hub;
 	$this->topic = $topic;
 	$this->secret = $secret;
 	$this->status = $status;
-	$this->post_fields = $post_fields;
+	$this->callback_url = $callback_url;
+	$this->verify_token = $verify_token;
+	$this->lease_time = $lease_time;
   }
 
   /**
@@ -47,7 +49,7 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
    */
   public function save() {
 	$filepath = self::get_filepath($this->domain, $this->subscriber_id);
-	if(file_put_contents($filepath, $this->_toJSON())) {
+	if(file_put_contents($filepath, $this->_toJSON(), LOCK_EX)) {
 	  return true;
 	} else {
 	  return false;
@@ -78,7 +80,9 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
 		 'topic' => $this->topic,
 		 'secret' => $this->secret,
 		 'status' => $this->status,
-		 'post_fields' => $this->post_fields
+		 'callback_url' => $this->callback_url,
+		 'verify_token' => $this->verify_token,
+		 'lease_time' => $this->lease_time
 	);
 	return json_encode($data);
   }
@@ -92,7 +96,9 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
 	  $data['topic'],
 	  $data['secret'],
 	  $data['status'],
-	  $data['post_fields']
+	  $data['callback_url'],
+	  $data['verify_token'],
+	  $data['lease_time']
 	);
 	return $subscription;
   }
@@ -115,7 +121,7 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
 	  if(is_readable($filepath)) {
 	    if($data = file_get_contents($filepath)) {
 		  $sub = self::_fromJSON($data);
-		  self::$subscriptions[$domain][$subscriber_id] = $sub
+		  self::$subscriptions[$domain][$subscriber_id] = $sub;
 		  return $sub;
 	    } else {
 	      return NULL;
