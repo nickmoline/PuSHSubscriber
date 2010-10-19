@@ -35,7 +35,7 @@ class PuSHSubscriber {
    *   A numeric subscriber id.
    * @param $subscription_class
    *   The class to use for handling subscriptions. Class MUST implement
-   *   PuSHSubscriberSubscriptionInterface
+   *   PuSHSubscriptionInterface
    * @param PuSHSubscriberEnvironmentInterface $env
    *   Environmental object for messaging and logging.
    */
@@ -214,7 +214,7 @@ class PuSHSubscriber {
        * In all other cases confirm negative.
        */
       if ($sub = $this->subscription()) {
-        if ($_GET['hub_verify_token'] == $sub->post_fields['hub.verify_token']) {
+        if ($_GET['hub_verify_token'] == $sub->verify_token) {
           if ($_GET['hub_mode'] == 'subscribe' && $sub->status == 'subscribe') {
             $sub->status = 'subscribed';
             
@@ -224,7 +224,7 @@ class PuSHSubscriber {
           }
           elseif ($_GET['hub_mode'] == 'unsubscribe' && $sub->status == 'unsubscribe') {
             $sub->status = 'unsubscribed';
-            $sub->post_fields = array();
+            
             $sub->save();
             $this->log('Verified "unsubscribe" request.');
             $verify = TRUE;
@@ -263,20 +263,24 @@ class PuSHSubscriber {
    * @todo Make concurrency safe.
    */
   protected function request($hub, $topic, $mode, $callback_url, $lease_time='') {
-	$entropy = microtime() . mt_rand() . uniqid(mt_rand(),true);
-    $secret = hash('sha1', $entropy, true));
+	$entropy = microtime() . mt_rand() . uniqid(mt_rand(),true) . $this->domain . $this->subscriber_id;
+    $secret = hash('sha1', $entropy, true);
+	$verify_token = md5(microtime() . mt_rand() . $this->domain . $this->subscriber_id);
     $post_fields = array(
       'hub.callback' => $callback_url,
       'hub.mode' => $mode,
       'hub.topic' => $topic,
       'hub.verify' => 'async',
-      'hub.lease_seconds' => $lease_time, // Permanent subscription.
+      'hub.lease_seconds' => $lease_time, // Permanent subscription if empty.
       'hub.secret' => $secret,
-      'hub.verify_token' => md5(session_id() . mt_rand()),
+      'hub.verify_token' => $verify_token
     );
+	
+	// Store subscription object
 	$sub_class = $this->subscription_class;
-    $sub = new $sub_class($this->domain, $this->subscriber_id, $hub, $topic, $secret, $mode, $post_fields);
+    $sub = new $sub_class($this->domain, $this->subscriber_id, $hub, $topic, $secret, $mode, $callback_url, $verify_token, $lease_time);
     $sub->save();
+	
     // Issue subscription request.
     $request = curl_init($hub);
     curl_setopt($request, CURLOPT_POST, TRUE);
@@ -303,7 +307,7 @@ class PuSHSubscriber {
    *   otherwise.
    */
   public function subscription() {
-    return call_user_func(array($this->subscription_class, 'load'), $this->domain, $this->subscriber_id);
+    return call_user_func_array(array($this->subscription_class, 'load'), array($this->domain, $this->subscriber_id));
   }
 
   /**
@@ -359,10 +363,8 @@ interface PuSHSubscriptionInterface {
    *   'unsubscribed' - unsubscribed.
    *   'subscribe failed' - subscribe request failed.
    *   'unsubscribe failed' - unsubscribe request failed.
-   * @param $post_fields
-   *   An array of the fields posted to the hub.
    */
-  public function __construct($domain, $subscriber_id, $hub, $topic, $secret, $status = '', $post_fields = '');
+  public function __construct($domain, $subscriber_id, $hub, $topic, $secret, $status = '', $callback_url, $verify_token, $lease_time='');
 
   /**
    * Save a subscription.
