@@ -21,7 +21,7 @@ include '../PSubscriptionFile.php';
 include '../PEnvFile.php';
 
 if(isset($_POST['feed'], $_POST['hub'])) {
-	$domain = 'example_subs';
+	$domain = 'pushtest.nick.pro';
 	$sub_id = (int)file_get_contents('./subscriptions/sub_number');
 	$sub_id++;
 	file_put_contents('./subscriptions/sub_number', $sub_id);
@@ -30,7 +30,7 @@ if(isset($_POST['feed'], $_POST['hub'])) {
 	$hub = $_POST['hub'];
 	
 	// CHANGE THIS TO YOUR DOMAIN/PATH
-	$callback_url = 'http://example.com/pubsub/example/index.php?domain='. $domain .'&sub_id='. $sub_id;
+	$callback_url = 'http://pushtest.nick.pro/example/index.php?domain='. $domain .'&sub_id='. $sub_id;
 	
 	
 	$subber = PuSHSubscriber::instance($domain, $sub_id, 'PSubscriptionFile', new PEnvFile());
