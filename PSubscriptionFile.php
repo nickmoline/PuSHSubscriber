@@ -87,7 +87,7 @@ class PSubscriptionFile implements PuSHSubscriptionInterface {
 	return json_encode($data);
   }
   
-  public static function _fromJSON($data) {
+  public function _fromJSON($data) {
 	$data = json_decode($data, true);
 	$subscription = new PSubscriptionFile(
 	  $data['domain'],
